@@ -45,7 +45,7 @@ def a706gr60_interp(strain):
         return -95000.
     else:
         return float(f(strain))
-
+    
 
 A706GR60 = {
     'fy': 60000,
@@ -102,6 +102,7 @@ class rect_sect:
             
             def fc(e, fccprime, ecc, r):
                 return fccprime * e / ecc * r / (r - 1 + (e/ecc)**r)
+            
             def integrand1(e, fccprime, ecc, r):
                 return e * fc(e, fccprime, ecc, r)
             beta1 = 2. * (
@@ -142,10 +143,10 @@ class rect_sect:
 
             f_ts = self.ast * self.steel['interp_func'](epsilon_st)
             if epsilon_sc > 0:
-                f_cs = self.asc * (self.steel['interp_func'](epsilon_sc) - alpha1 * self.fcprime)
+                f_cs = self.asc * (self.steel['interp_func'](epsilon_sc) - alpha1 * fccprime)
             else:
                 f_cs = self.asc * self.steel['interp_func'](-epsilon_sc)
-            f_c  = alpha1 * fccprime * self.bw * beta1 * c
+            f_c  = alpha1 * fccprime * (self.bw-2.*cover) * beta1 * c
         else:
             raise ValueError("Invalid procedure", procedure)
             
@@ -179,8 +180,49 @@ class rect_sect:
     def resultant_moment(self, c, epsilon_c, procedure, args={}):
         f_ts, f_cs, f_c = self.get_resultant_forces(c, epsilon_c, procedure, args)
         p = self.resultant_axial_force(c, epsilon_c, procedure, args)
-        b1 = b1_ACI(self.fcprime)
-        return p * self.h/2. + f_ts * self.dt - f_c * 0.5 * b1 * c - f_cs * self.dc
+        if procedure in ["ACI nominal", "ACI probable"]:
+            b1 = b1_ACI(self.fcprime)
+            beta = b1
+        elif procedure == "Expected Spalling State":
+            ecu = 0.004
+            ecc = 0.002
+            fccprime = 0.85 * self.fcprime
+            young_conc = 57000 * np.sqrt(self.fcprime)
+            r = young_conc / (young_conc - fccprime / ecc)
+
+            def fc(e, fccprime, ecc, r):
+                return fccprime * e / ecc * r / (r - 1 + (e/ecc)**r)
+
+            def integrand1(e, fccprime, ecc, r):
+                return e * fc(e, fccprime, ecc, r)
+
+            beta1 = 2. * (
+                1. - 1./ecu * integrate.quad(
+                    integrand1, 0.00, ecu, args=(fccprime, ecc, r))[0] /
+                integrate.quad(fc, 0., ecu, args=(fccprime, ecc, r))[0])
+            beta = beta1
+        elif procedure == "Expected Max State":
+            ecu = args['ecu']
+            ecc = args['ecc']
+            fccprime = args['fccprime']
+            young_conc = 57000 * np.sqrt(self.fcprime)
+            r = young_conc / (young_conc - fccprime / ecc)
+
+            def fc(e, fccprime, ecc, r):
+                return fccprime * e / ecc * r / (r - 1 + (e/ecc)**r)
+
+            def integrand1(e, fccprime, ecc, r):
+                return e * fc(e, fccprime, ecc, r)
+
+            beta1 = 2. * (
+                1. - 1./ecu * integrate.quad(
+                    integrand1, 0.00, ecu, args=(fccprime, ecc, r))[0] /
+                integrate.quad(fc, 0., ecu, args=(fccprime, ecc, r))[0])
+            beta = beta1
+        else:
+            raise ValueError("Invalid procedure", procedure)
+        return p * self.h/2. + \
+            f_ts * self.dt - f_c * 0.5 * beta * c - f_cs * self.dc
 
     def moment_strength(self, axial_compression, procedure, args={}):
         c_opt = self.determine_compression_zone(axial_compression, 4.00, 0.003, procedure, args)
@@ -248,33 +290,44 @@ class rect_sect:
         def resultants(c):
             epsilon_st = esmax
             epsilon_sc = esmax / (dt_spall - c) * (c - dc_spall)
-            epsilon_c  = esmax / (dt_spall - c) * c
+            epsilon_c = esmax / (dt_spall - c) * c
             young_conc = 57000 * np.sqrt(self.fcprime)
             r = young_conc / (young_conc - fccprime / ecc)
+            
             def fc(e, fccprime, ecc, r):
-                    return fccprime * e / ecc * r / (r - 1 + (e/ecc)**r)
+                return fccprime * e / ecc * r / (r - 1 + (e/ecc)**r)
+                
             def integrand1(e, fccprime, ecc, r):
                 return e * fc(e, fccprime, ecc, r)
+            
             beta1 = 2. * (
-                1. - 1./epsilon_c * integrate.quad(integrand1, 0.00, epsilon_c, args=(fccprime, ecc, r))[0] / \
-                integrate.quad(fc, 0., epsilon_c, args=(fccprime, ecc, r))[0] )
-            alpha1 = 1./epsilon_c * integrate.quad(fc, 0., epsilon_c, args=(fccprime, ecc, r))[0] / (fccprime * beta1)
+                1. - 1./epsilon_c * integrate.quad(
+                    integrand1, 0.00, epsilon_c,
+                    args=(fccprime, ecc, r))[0] /
+                integrate.quad(fc, 0., epsilon_c, args=(fccprime, ecc, r))[0])
+            alpha1 = 1./epsilon_c * integrate.quad(
+                fc, 0., epsilon_c,
+                args=(fccprime, ecc, r))[0] / (fccprime * beta1)
             f_ts = self.ast * self.steel['interp_func'](epsilon_st)
             if epsilon_sc > 0:
-                f_cs = self.asc * (self.steel['interp_func'](epsilon_sc) - alpha1 * self.fcprime)
+                f_cs = self.asc * (
+                    self.steel['interp_func'](epsilon_sc) -
+                    alpha1 * self.fcprime)
             else:
                 f_cs = self.asc * self.steel['interp_func'](-epsilon_sc)
-            f_c  = alpha1 * fccprime * self.bw * beta1 * c
+            f_c = alpha1 * fccprime * (self.bw-2.*cover) * beta1 * c
             return f_c, f_cs, f_ts, beta1, epsilon_c
-        
+
         def objective(c, compression):
             f_c, f_cs, f_ts, _, _ = resultants(c)
             return (f_c + f_cs - f_ts - compression)**2
         res = minimize(objective, 2.00, args=(axial_compression))
         c_opt = res.x[0]
-        assert(objective(c_opt, axial_compression) < 1e-2), "Error: Can't determine compression zone"
+        assert(objective(c_opt, axial_compression) < 1e-2),\
+            "Error: Can't determine compression zone"
         f_c, f_cs, f_ts, b1, ec = resultants(c_opt)
-        mu = axial_compression * self.h/2. + f_ts * self.dt - f_c * 0.5 * b1 * c_opt - f_cs * self.dc
+        mu = axial_compression * self.h/2. + f_ts * \
+            self.dt - f_c * 0.5 * b1 * c_opt - f_cs * self.dc
         phi = ec/c_opt
         return mu, phi
     
@@ -401,19 +454,6 @@ class rect_sect:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 my_sec = rect_sect(18.0,
                    24.0,
                    5*0.79,
@@ -423,20 +463,100 @@ my_sec = rect_sect(18.0,
                    4000.,
                    A706GR60)
 
-res = my_sec.get_envelope({
+args = {
     'fccprime': 6511.9,
     'ecc': 0.011153,
-    'ecu': 0.09025,
+    'ecu': 0.05144,
     'cover': 1.5,
     'esmax': 0.16
-                  })
+}
 
+print()
+print(" ~~~~~~~~~ ")
+print(" Problem 1 ")
+print(" ~~~~~~~~~ ")
+print()
+print()
+
+print("Nominal moment strength")
+print()
+
+c_opt = my_sec.determine_compression_zone(
+    0.00, 3.00, 0.003, "ACI nominal")
 m_nom = my_sec.moment_strength(0.0, "ACI nominal") / 1000.
-m_ult = my_sec.moment_strength(0.0, "ACI probable") / 1000.
+print("  - optimum c value:", c_opt)
+print()
 
-xtract_data = np.genfromtxt('/home/john_vm/VirtualBox VMs/Windows10/shared_folder/xtract_output.txt', skip_header=16, delimiter='\t')
+print("  - moment (kip-in):", m_nom)
+print()
+
+print("Probable moment strength")
+print()
+
+c_opt = my_sec.determine_compression_zone(
+    0.00, 3.00, 0.003, "ACI probable")
+m_prob = my_sec.moment_strength(0.0, "ACI probable") / 1000.
+print("  - optimum c value:", c_opt)
+print()
+
+print("  - moment (kip-in):", m_prob)
+print()
+
+
+print()
+print(" ~~~~~~~~~ ")
+print(" Problem 2 ")
+print(" ~~~~~~~~~ ")
+print()
+print()
+
+print("(a) Moment and Curvature at Cracking")
+print()
+res = my_sec.moment_curv_crack()
+mom_crack = res[0] / 1000
+curv_crack = res[1]
+print("  - moment (kip-in):", mom_crack)
+print()
+print("  - curvature (in^-1):", curv_crack)
+print()
+
+print("(b) Moment and Curvature at onset of long. rein. yielding")
+print()
+res = my_sec.moment_curv_yield()
+mom_yield = res[0] / 1000
+curv_yield = res[1]
+print("  - moment (kip-in):", mom_yield)
+print()
+print("  - curvature (in^-1):", curv_yield)
+print()
+
+print("(c) Moment and Curvature at onset of cover spalling")
+print()
+res = my_sec.moment_curv_spall(args)
+mom_spall = res[0] / 1000
+curv_spall = res[1]
+print("  - moment (kip-in):", mom_spall)
+print()
+print("  - curvature (in^-1):", curv_spall)
+print()
+
+print("(e) Moment and Curvature at max. confined strength of concrete")
+print()
+res = my_sec.moment_curv_ult(args)
+mom_ult = res[0] / 1000
+curv_ult = res[1]
+print("  - moment (kip-in):", mom_ult)
+print()
+print("  - curvature (in^-1):", curv_ult)
+print()
+
+
+
+
+
+res = my_sec.get_envelope(args)
+xtract_data = np.genfromtxt('resources/hw4/xtract_output.txt', skip_header=16, delimiter='\t')
 xtract_data = xtract_data[:,0:2]
-
 
 
 plt.figure(figsize=(8,4))
@@ -444,9 +564,10 @@ plt.plot(-xtract_data[:,1], -xtract_data[:,0], 'red')
 plt.plot(res[:,1], res[:,0]/1000., 'k')
 plt.scatter(res[:,1], res[:,0]/1000.,  s=80, facecolors='none', edgecolors='k')
 plt.plot(np.array([0., 0.01]), np.array([m_nom, m_nom]), "--")
-plt.plot(np.array([0., 0.01]), np.array([m_ult, m_ult]), "--")
+plt.plot(np.array([0., 0.01]), np.array([m_prob, m_prob]), "--")
 plt.grid()
 plt.xlabel("Curvature ($in^{-1}$)")
 plt.ylabel("Moment ($kip \cdot in$)")
 plt.show()
 plt.close()
+
